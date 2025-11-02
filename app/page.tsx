@@ -1,65 +1,131 @@
-import Image from "next/image";
+"use client";
+
+import type { Todo } from "@/types";
+import { type DefaultError, useMutation, useQuery } from "@tanstack/react-query";
+import { useState } from "react";
+import { v4 as uuidv4 } from "uuid";
+
+const QUERY_KEY = ["todos"];
+
+/**
+ * Simulate traffic time.
+ */
+function sleep(): Promise<unknown> {
+	return new Promise(resolve => {
+		setTimeout(() => {
+			resolve(1);
+		}, 1000);
+	});
+}
 
 export default function Home() {
-  return (
-    <div className="flex min-h-screen items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex min-h-screen w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
-      </main>
-    </div>
-  );
+	const [enableOptimistic, setEnableOptimistic] = useState<boolean>(true);
+	const [input, setInput] = useState<string>("");
+
+	const { data, isLoading } = useQuery<Todo[]>({
+		queryKey: QUERY_KEY,
+		queryFn: async () => {
+			await sleep();
+			const res = await fetch("http://localhost:3000/api/todo");
+			return res.json();
+		},
+	});
+
+	console.log(data);
+
+	const addMutation = useMutation<
+		Todo,
+		DefaultError,
+		{ input: string; id: string; throwError?: boolean },
+		{ previousTodos: Todo[] }
+	>({
+		mutationFn: async ({ input, id, throwError }) => {
+			await sleep();
+			if (throwError) {
+				throw new Error("We caused an intentional error.");
+			}
+			const res = await fetch("http://localhost:3000/api/todo", {
+				method: "POST",
+				body: JSON.stringify({ title: input, id } satisfies Todo),
+			});
+			return res.json();
+		},
+		onMutate: enableOptimistic
+			? async (newTodo, context) => {
+					// Cancel any outgoing refetches
+					// (so they don't overwrite our optimistic update)
+					await context.client.cancelQueries({ queryKey: QUERY_KEY });
+
+					// Snapshot the previous value
+					const previousTodos: Todo[] = context.client.getQueryData(QUERY_KEY) ?? [];
+
+					// Optimistically update to the new value
+					context.client.setQueryData(QUERY_KEY, (old: Todo[]) => [
+						...old,
+						{ title: newTodo.input, id: newTodo.id } satisfies Todo,
+					]);
+
+					// Return a result with the snapshotted value
+					return { previousTodos };
+			  }
+			: undefined,
+		// If the mutation fails,
+		// use the result returned from onMutate to roll back
+		onError: (_err, _newTodo, onMutateResult, context) => {
+			context.client.setQueryData(QUERY_KEY, onMutateResult?.previousTodos ?? []);
+		},
+		// Always refetch after error or success:
+		onSettled: (_data, _error, _variables, _onMutateResult, context) =>
+			context.client.invalidateQueries({ queryKey: QUERY_KEY }),
+		onSuccess: () => setInput(""),
+	});
+
+	return (
+		<div className="h-full w-full flex flex-col justify-center items-center gap-8">
+			<h1 className="font-bold text-6xl mb-8">Optimistic updates demo</h1>
+			<form
+				className="flex gap-4"
+				onSubmit={e => {
+					e.preventDefault();
+					addMutation.mutate({ input, id: uuidv4() });
+				}}
+			>
+				<input
+					type="text"
+					placeholder="Do chores"
+					className="border rounded-md px-2 py-1"
+					onChange={e => setInput(e.target.value)}
+					value={input}
+				/>
+				<button type="submit" className="bg-white text-background font-bold p-2 rounded-md">
+					Optimistic
+				</button>
+				<button
+					type="button"
+					className="bg-red-500 font-bold p-2 rounded-md"
+					onClick={() => addMutation.mutate({ input, id: uuidv4(), throwError: true })}
+				>
+					Error
+				</button>
+				<div className="flex items-center gap-1">
+					<input
+						id="enable-optimistic"
+						type="checkbox"
+						checked={enableOptimistic}
+						onChange={e => setEnableOptimistic(e.target.checked)}
+					/>
+					<label htmlFor="enable-optimistic">Enable optimistic</label>
+				</div>
+			</form>
+			{isLoading && <p className="font-semibold">Loading...</p>}
+			<div className="flex flex-wrap gap-4 max-w-8/12">
+				{data?.map(({ id, title }) => (
+					<div key={id} className="border py-6 px-12 font-semibold rounded-md flex flex-col gap-2">
+						<p>{title}</p>
+						<p className="text-xs">{id}</p>
+					</div>
+				))}
+			</div>
+		</div>
+	);
 }
