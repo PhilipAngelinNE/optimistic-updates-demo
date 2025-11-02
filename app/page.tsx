@@ -31,8 +31,6 @@ export default function Home() {
 		},
 	});
 
-	console.log(data);
-
 	const addMutation = useMutation<
 		Todo,
 		DefaultError,
